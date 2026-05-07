@@ -20,7 +20,7 @@ use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::Widget,
-    style::{Color, Style},
+    style::Style,
     text::Span,
     widgets::Block,
 };
@@ -284,40 +284,13 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
 
         match load_result {
             Ok(Some(saved)) => {
-                app.api_messages.clone_from(&saved.messages);
-                app.model.clone_from(&saved.metadata.model);
-                app.update_model_compaction_budget();
-                app.workspace.clone_from(&saved.metadata.workspace);
-                app.current_session_id = Some(saved.metadata.id.clone());
-                app.session.total_tokens =
-                    u32::try_from(saved.metadata.total_tokens).unwrap_or(u32::MAX);
-                app.session.total_conversation_tokens = app.session.total_tokens;
-                app.session.last_prompt_tokens = None;
-                app.session.last_completion_tokens = None;
-                app.session.last_prompt_cache_hit_tokens = None;
-                app.session.last_prompt_cache_miss_tokens = None;
-                app.session.last_reasoning_replay_tokens = None;
-                if let Some(prompt) = saved.system_prompt {
-                    app.system_prompt = Some(SystemPrompt::Text(prompt));
+                let recovered = apply_loaded_session(&mut app, &saved);
+                if !recovered {
+                    app.status_message = Some(format!(
+                        "Resumed session: {}",
+                        crate::session_manager::truncate_id(&saved.metadata.id)
+                    ));
                 }
-                // Convert saved messages to HistoryCell format for display
-                app.clear_history();
-                app.push_history_cell(HistoryCell::System {
-                    content: format!(
-                        "Resumed session: {} ({})",
-                        saved.metadata.title,
-                        crate::session_manager::truncate_id(&saved.metadata.id),
-                    ),
-                });
-
-                for msg in &saved.messages {
-                    app.extend_history(history_cells_from_message(msg));
-                }
-                app.mark_history_updated();
-                app.status_message = Some(format!(
-                    "Resumed session: {}",
-                    crate::session_manager::truncate_id(&saved.metadata.id)
-                ));
             }
             Ok(None) => {
                 app.status_message = Some("No sessions found to resume".to_string());
@@ -344,7 +317,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                         .into_iter()
                         .map(queued_session_to_ui)
                         .collect();
-                    app.queued_draft = state.draft.map(queued_session_to_ui);
+                    let restored_draft = state.draft.map(queued_session_to_ui);
+                    if restored_draft.is_some() || app.queued_draft.is_none() {
+                        app.queued_draft = restored_draft;
+                    }
                     if app.status_message.is_none() && app.queued_message_count() > 0 {
                         app.status_message = Some(format!(
                             "Restored {} queued message(s) from previous session — ↑ to edit, Ctrl+X to discard",
@@ -3642,7 +3618,7 @@ async fn dispatch_user_message(
         persistence_actor::persist(PersistRequest::Checkpoint(session));
     }
 
-    let auto_selection = if app.auto_model || app.reasoning_effort == ReasoningEffort::Auto {
+    let auto_selection = if should_resolve_auto_model_selection(app) {
         Some(resolve_auto_model_selection(app, config, &message, &content).await)
     } else {
         None
@@ -3710,6 +3686,10 @@ async fn dispatch_user_message(
     }
 
     Ok(())
+}
+
+fn should_resolve_auto_model_selection(app: &App) -> bool {
+    app.auto_model
 }
 
 async fn resolve_auto_model_selection(
@@ -3918,11 +3898,7 @@ async fn apply_model_picker_choice(
         app.last_effective_model = None;
         app.model = model.clone();
         app.update_model_compaction_budget();
-        app.session.last_prompt_tokens = None;
-        app.session.last_completion_tokens = None;
-        app.session.last_prompt_cache_hit_tokens = None;
-        app.session.last_prompt_cache_miss_tokens = None;
-        app.session.last_reasoning_replay_tokens = None;
+        app.clear_model_scoped_telemetry();
     }
     if effort_changed {
         app.reasoning_effort = effort;
@@ -4040,11 +4016,16 @@ async fn switch_provider(
     }
 
     let new_model = config.default_model();
+    let cache_scope_changed = previous_provider != target || previous_model != new_model;
     app.api_provider = target;
     app.model = new_model.clone();
     app.update_model_compaction_budget();
-    app.session.last_prompt_tokens = None;
-    app.session.last_completion_tokens = None;
+    if cache_scope_changed {
+        app.clear_model_scoped_telemetry();
+    } else {
+        app.session.last_prompt_tokens = None;
+        app.session.last_completion_tokens = None;
+    }
 
     let _ = engine_handle.send(Op::Shutdown).await;
     let engine_config = build_engine_config(app, config);
@@ -5141,8 +5122,8 @@ fn build_pending_input_preview(app: &App) -> PendingInputPreview {
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
-    // Clear entire area with terminal default background
-    let background = Block::default().style(Style::default().bg(Color::Reset));
+    // Clear entire area with the configured app background.
+    let background = Block::default().style(Style::default().bg(app.ui_theme.surface_bg));
     f.render_widget(background, size);
 
     // Show onboarding screen if needed
@@ -5213,6 +5194,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Deepseek => None,
             crate::config::ApiProvider::DeepseekCN => None,
             crate::config::ApiProvider::NvidiaNim => Some("NIM"),
+            crate::config::ApiProvider::Openai => Some("OpenAI"),
             crate::config::ApiProvider::Openrouter => Some("OR"),
             crate::config::ApiProvider::Novita => Some("Novita"),
             crate::config::ApiProvider::Fireworks => Some("Fireworks"),
@@ -5246,7 +5228,9 @@ fn render(f: &mut Frame, app: &mut App) {
         // background before any sub-widgets render, so cells that end up
         // uncovered by layout splits (e.g. after file-tree toggle or
         // resize) don't retain stale content from a previous frame.
-        Block::default().render(chunks[1], f.buffer_mut());
+        Block::default()
+            .style(Style::default().bg(app.ui_theme.surface_bg))
+            .render(chunks[1], f.buffer_mut());
 
         let mut sidebar_area = None;
 
@@ -5536,7 +5520,7 @@ async fn handle_view_events(
 
                 match manager.load_session(&session_id) {
                     Ok(session) => {
-                        apply_loaded_session(app, &session);
+                        let recovered = apply_loaded_session(app, &session);
                         let _ = engine_handle
                             .send(Op::SyncSession {
                                 messages: app.api_messages.clone(),
@@ -5550,10 +5534,12 @@ async fn handle_view_events(
                                 config: app.compaction_config(),
                             })
                             .await;
-                        app.status_message = Some(format!(
-                            "Session loaded (ID: {})",
-                            &session_id[..8.min(session_id.len())]
-                        ));
+                        if !recovered {
+                            app.status_message = Some(format!(
+                                "Session loaded (ID: {})",
+                                &session_id[..8.min(session_id.len())]
+                            ));
+                        }
                     }
                     Err(err) => {
                         app.status_message =
@@ -5844,6 +5830,7 @@ async fn apply_provider_picker_api_key(
                 return;
             }
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
+            ApiProvider::Openai => &mut providers.openai,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
             ApiProvider::Fireworks => &mut providers.fireworks,
@@ -5857,8 +5844,9 @@ async fn apply_provider_picker_api_key(
     switch_provider(app, engine_handle, config, provider, None).await;
 }
 
-fn apply_loaded_session(app: &mut App, session: &SavedSession) {
-    app.api_messages.clone_from(&session.messages);
+fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
+    let (messages, recovered_draft) = recover_interrupted_user_tail(&session.messages);
+    app.api_messages = messages;
     app.clear_history();
     app.tool_cells.clear();
     app.tool_details_by_cell.clear();
@@ -5905,10 +5893,19 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     app.workspace.clone_from(&session.metadata.workspace);
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
+    app.session.session_cost = 0.0;
+    app.session.session_cost_cny = 0.0;
+    app.session.subagent_cost = 0.0;
+    app.session.subagent_cost_cny = 0.0;
+    app.session.subagent_cost_event_seqs.clear();
+    app.session.displayed_cost_high_water = 0.0;
+    app.session.displayed_cost_high_water_cny = 0.0;
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;
     app.session.last_prompt_cache_miss_tokens = None;
+    app.session.last_reasoning_replay_tokens = None;
+    app.session.turn_cache_history.clear();
     app.current_session_id = Some(session.metadata.id.clone());
     app.workspace_context = None;
     app.workspace_context_refreshed_at = None;
@@ -5917,7 +5914,57 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     } else {
         app.system_prompt = None;
     }
+    let recovered = if let Some(draft) = recovered_draft {
+        restore_recovered_retry_draft(app, draft);
+        true
+    } else {
+        false
+    };
     app.scroll_to_bottom();
+    recovered
+}
+
+fn recover_interrupted_user_tail(messages: &[Message]) -> (Vec<Message>, Option<QueuedMessage>) {
+    let mut recovered = messages.to_vec();
+    let Some(last) = recovered.last() else {
+        return (recovered, None);
+    };
+    if last.role != "user" {
+        return (recovered, None);
+    }
+    let Some(display) = retry_display_from_user_message(last) else {
+        return (recovered, None);
+    };
+    recovered.pop();
+    (recovered, Some(QueuedMessage::new(display, None)))
+}
+
+fn retry_display_from_user_message(message: &Message) -> Option<String> {
+    let text = message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let display = compact_user_context_display(&text).trim().to_string();
+    if display.is_empty() {
+        None
+    } else {
+        Some(display)
+    }
+}
+
+fn restore_recovered_retry_draft(app: &mut App, draft: QueuedMessage) {
+    app.input.clone_from(&draft.display);
+    app.cursor_position = app.input.chars().count();
+    app.queued_draft = Some(draft);
+    app.status_message = Some(
+        "Recovered interrupted prompt as an editable draft; press Enter to retry.".to_string(),
+    );
+    app.needs_redraw = true;
 }
 
 fn compact_user_context_display(content: &str) -> String {
@@ -7230,6 +7277,11 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
+            if mouse_hits_rect(mouse, app.viewport.jump_to_latest_button_area) {
+                app.scroll_to_bottom();
+                return Vec::new();
+            }
+
             if let Some(point) = selection_point_from_mouse(app, mouse) {
                 app.viewport.transcript_selection.anchor = Some(point);
                 app.viewport.transcript_selection.head = Some(point);
@@ -7268,6 +7320,17 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     }
 
     Vec::new()
+}
+
+fn mouse_hits_rect(mouse: MouseEvent, area: Option<Rect>) -> bool {
+    let Some(area) = area else {
+        return false;
+    };
+
+    mouse.column >= area.x
+        && mouse.column < area.x.saturating_add(area.width)
+        && mouse.row >= area.y
+        && mouse.row < area.y.saturating_add(area.height)
 }
 
 fn open_context_menu(app: &mut App, mouse: MouseEvent) {

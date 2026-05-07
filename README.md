@@ -95,6 +95,7 @@ You can also set it ahead of time:
 
 ```bash
 deepseek auth set --provider deepseek   # saves to ~/.deepseek/config.toml
+deepseek auth status                    # shows the active credential source
 
 export DEEPSEEK_API_KEY="YOUR_KEY"      # env var alternative; use ~/.zshenv for non-interactive shells
 deepseek
@@ -103,9 +104,10 @@ deepseek doctor                         # verify setup
 ```
 
 If `deepseek doctor` says the rejected key came from `DEEPSEEK_API_KEY`, remove
-the stale export from your shell startup file, open a fresh shell, then run
-`deepseek auth set --provider deepseek`. Saved config keys take precedence over
-the environment and are easier to rotate.
+the stale export from your shell startup file, open a fresh shell, or run
+`deepseek auth set --provider deepseek`. Use `deepseek auth status` to see the
+config, keyring, and env-var source state without printing the key. Saved config
+keys take precedence over the keyring and environment and are easier to rotate.
 
 > To rotate or remove a saved key: `deepseek auth clear --provider deepseek`.
 
@@ -153,8 +155,19 @@ Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.c
 
 ### Windows (Scoop)
 
-A Scoop manifest has not been published yet. For now, use npm, Cargo, or the
-prebuilt Windows binaries from [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases).
+[Scoop](https://scoop.sh) is a Windows package manager. DeepSeek TUI is listed
+in Scoop's main bucket, but that manifest updates independently and can lag the
+GitHub/npm/Cargo release. Run `scoop update` first, then verify the installed
+version with `deepseek --version`:
+
+```bash
+scoop update
+scoop install deepseek-tui
+deepseek --version
+```
+
+Use npm or direct GitHub release downloads when you need the newest release
+before Scoop's manifest catches up.
 
 
 <details id="install-from-source">
@@ -188,6 +201,10 @@ deepseek --provider nvidia-nim
 # Fireworks
 deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
 deepseek --provider fireworks --model deepseek-v4-pro
+
+# Generic OpenAI-compatible endpoint
+deepseek auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
+OPENAI_BASE_URL="https://openai-compatible.example/v4" deepseek --provider openai --model glm-5
 
 # Self-hosted SGLang
 SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model deepseek-v4-flash
@@ -317,10 +334,12 @@ Key environment variables:
 | `DEEPSEEK_BASE_URL` | API base URL |
 | `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
-| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `fireworks`, `sglang`, `vllm`, `ollama` |
+| `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Stream idle timeout in seconds, default `300`, clamped to `1..=3600` |
+| `DEEPSEEK_PROVIDER` | `deepseek` (default), `deepseek-cn`, `nvidia-nim`, `openai`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, `ollama` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
-| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
+| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
+| `OPENAI_BASE_URL` / `OPENAI_MODEL` | Generic OpenAI-compatible endpoint and model ID |
 | `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
 | `VLLM_BASE_URL` | Self-hosted vLLM endpoint |
 | `OLLAMA_BASE_URL` | Self-hosted Ollama endpoint |
@@ -328,7 +347,7 @@ Key environment variables:
 | `NO_ANIMATIONS=1` | Force accessibility mode at startup |
 | `SSL_CERT_FILE` | Custom CA bundle for corporate proxies |
 
-UI locale is separate from model language — set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_ALL`/`LANG`. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
+Set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_ALL`/`LANG` to choose UI chrome and the default natural language sent to V4 models. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
 
 ---
 
