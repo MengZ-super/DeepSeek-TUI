@@ -357,11 +357,14 @@ fn remove_char_at(text: &mut String, char_index: usize) -> bool {
 }
 
 fn normalize_paste_text(text: &str) -> String {
-    if text.contains('\r') {
+    let normalized = if text.contains('\r') {
         text.replace("\r\n", "\n").replace('\r', "")
     } else {
         text.to_string()
-    }
+    };
+    // Strip trailing newlines to prevent accidental submit when pasting
+    // text that ends with a trailing newline (#1073)
+    normalized.trim_end_matches('\n').to_string()
 }
 
 fn sanitize_api_key_text(text: &str) -> String {
