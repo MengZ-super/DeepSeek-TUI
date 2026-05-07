@@ -72,6 +72,20 @@ __pycache__/
 .m2/
 .local/
 .DS_Store
+# Compilation / build output
+*.img
+*.bin
+*.elf
+*.hex
+*.o
+*.out
+out/
+obj/
+# Large binary blobs
+*.iso
+*.img
+*.vdi
+*.vmdk
 ";
 
 impl SnapshotRepo {
